@@ -4,8 +4,6 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.bean.copier.CopyOptions;
 import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
-import cn.hutool.core.util.StrUtil;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
@@ -16,17 +14,20 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiFunction;
 
 import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
 import static com.hmdp.utils.RedisConstants.LOGIN_CODE_TTL;
@@ -104,6 +105,68 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         stringRedisTemplate.expire(tokenKey, RedisConstants.LOGIN_USER_TTL, TimeUnit.MINUTES);
         // 将token返回
         return Result.ok(token);
+    }
+
+    @Override
+    public Result sign() {
+        // 获取当前登录用户id
+        Long userId = UserHolder.getUser().getId();
+        // 获取当前时间
+        LocalDateTime now = LocalDateTime.now();
+        String suffix = now.format(DateTimeFormatter.ofPattern(":yyyy/MM"));
+        // 设置redis key
+        String key = RedisConstants.USER_SIGN_KEY + userId + suffix;
+        // 获取当前是这个月第几天
+        int offset = now.getDayOfMonth();
+        stringRedisTemplate.opsForValue().setBit(key, offset - 1, true);
+        return Result.ok();
+    }
+
+    /**
+     * 判断当前用户在本月到目前为止的连续签到时间
+     * @return
+     */
+    @Override
+    public Result signCount() {
+        // 获取当前登录用户id
+        Long userId = UserHolder.getUser().getId();
+        // 获取当前时间
+        LocalDateTime now = LocalDateTime.now();
+        String suffix = now.format(DateTimeFormatter.ofPattern(":yyyy/MM"));
+        // 设置redis key
+        String key = RedisConstants.USER_SIGN_KEY + userId + suffix;
+        // 获取当前是这个月第几天
+        int offset = now.getDayOfMonth();
+        // 获取本月到今天为止的签到信息(10进制无符号数)
+        List<Long> longs = stringRedisTemplate.opsForValue().bitField(
+                key,
+                BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(offset))
+                        .valueAt(0)
+        );
+        // 若没有签到记录 则返回空数据
+        if (longs == null || longs.isEmpty()) {
+            return Result.ok();
+        }
+        Long sign = longs.get(0);
+        // 获取签到记录形成的十进制数 判断是否存在
+        if (sign == null || sign == 0) {
+            return Result.ok(0);
+        }
+        int count = 0;
+        while (true) {
+            // 最后移位与1进行与运算 看是否为1
+            if ((sign & 1) == 0) {
+                // 不为1
+                break;
+            } else {
+                // 为1 计数器加1
+                count++;
+            }
+            // 向右移1位
+            sign >>>= 1;
+        }
+        return Result.ok(count);
     }
 
     /**
